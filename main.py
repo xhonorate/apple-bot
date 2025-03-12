@@ -1,11 +1,13 @@
 import cv2 as cv
 import numpy as np
 import os
-from time import time
+from time import sleep, time
 from windowcapture import WindowCapture
 from vision import Vision
 from bot import Bot, BotState
 import keyboard
+import sys
+import pyautogui
 
 # Change the working directory to the folder this script is in.
 # Doing this because I'll be putting the files from each video in their own folder on GitHub
@@ -24,6 +26,8 @@ vision6 = Vision('Screenshot_6.jpg')
 vision7 = Vision('Screenshot_7.jpg')
 vision8 = Vision('Screenshot_8.jpg')
 vision9 = Vision('Screenshot_9.jpg')
+resetVision = Vision('Screenshot_Reset.jpg')
+playVision = Vision('Screenshot_Play.jpg')
 bot = Bot((wincap.offset_x, wincap.offset_y), (wincap.w, wincap.h))
 
 global minX
@@ -37,6 +41,10 @@ maxX = 0
 maxY = 0
 loop_time = time()
 
+# pass a number as additional argument to auto start the bot when the spawn value is greater than the number
+minspawn = None
+if len(sys.argv) > 1:
+    minspawn = int(sys.argv[1])
 
 def startBot():
     print("Starting bot...")
@@ -80,17 +88,27 @@ def startBot():
 
             bot.update_targets(sortedPoints, minX, minY, avgX, avgY)
 
+def stopBot():
+    print("Stopping bot...")
+    os._exit(0)
 
 keyboard.add_hotkey('enter', startBot)
+keyboard.add_hotkey('q', stopBot)
 
 while(True):
+    accuracy = 0.95
     # get an updated image of the game
     screenshot = wincap.get_screenshot()
     #cv.imshow('Computer Vision', screenshot)
     #bot.update_screenshot(screenshot)
     
     if bot.state == BotState.INITIALIZING:
-        accuracy = 0.95
+        # auto press play button
+        playbtn = playVision.find(screenshot, accuracy)
+        if len(playbtn) > 0:
+            pyautogui.moveTo(x=playbtn[0][0], y=playbtn[0][1])
+            pyautogui.click()
+            continue
 
         points1 = vision1.find(screenshot, accuracy)
         points2 = vision2.find(screenshot, accuracy)
@@ -121,27 +139,23 @@ while(True):
             if spawnVal > 100:
                 spawnValString = "PERFECT"
             print("Spawn value: " + str(spawnVal) + " (" + spawnValString + ")")
-            print("Press Enter to start the bot...")
 
-    
+            if minspawn:
+                if spawnVal > minspawn:
+                    startBot()
+                else:
+                    resetbtn = resetVision.find(screenshot, accuracy)
+                    if len(resetbtn) > 0:
+                        #reset board
+                        pyautogui.moveTo(x=resetbtn[0][0], y=resetbtn[0][1] + 20)
+                        pyautogui.click()
+                        
+            else:
+                print("Press Enter to start the bot...")
+
 
     # debug the loop rate
     #print('FPS {}'.format(1 / (time() - loop_time)))
     loop_time = time()
-    
-
-    # press 'q' with the output window focused to exit.
-    # waits 1 ms every loop to process key presses
-    if cv.waitKey(1) == ord('r'):
-        bot.start()
-        maxX = 0
-
-    # press 'q' with the output window focused to exit.
-    # waits 1 ms every loop to process key presses
-    if cv.waitKey(1) == ord('q'):
-        cv.destroyAllWindows()
-        bot.stop()
-        print("Pressed q")
-        break
 
 print('Done.')

@@ -3,7 +3,7 @@ import pyautogui
 from time import sleep, time
 from threading import Thread, Lock
 from math import sqrt
-
+import numpy as np
 
 class BotState:
     INITIALIZING = 0
@@ -71,7 +71,7 @@ class Bot:
         offset_x = 20
         offset_y = 40
         padding = 30
-        speed = 0.35 * (0.5 + 0.5 * max((abs(p1[0] - p2[0]), abs(p1[1] - p2[1]))))
+        speed = 0.2 * (0.7 + 0.3 * max((abs(p1[0] - p2[0]), abs(p1[1] - p2[1]))))
         screen_x1, screen_y1 = self.get_screen_position(p1)
         screen_x2, screen_y2 = self.get_screen_position(p2)
 
@@ -81,227 +81,176 @@ class Bot:
         y2 = screen_y2 + padding + offset_y
 
         pyautogui.moveTo(x=x1, y=y1)
-        pyautogui.dragTo(x=x2, y=y2, duration=speed)
+        pyautogui.mouseDown()
+        pyautogui.dragTo(x2, y2, speed, pyautogui.easeOutQuad)
+        pyautogui.mouseUp()
 
         #img = cv.rectangle(self.screenshot, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
         #cv.imshow('Computer Vision', self.screenshot)
     
         self.state = BotState.SEARCHING
 
-    def check_adj_matches(self):
-        targets = self.targets
-
-        if self.curr_row >= len(self.targets):
-            self.curr_row = 0
-        
-        i = self.curr_row
-        found_match = False
-        while not found_match and i < len(targets):
-            # if we stopped our script, exit this loop
-            if self.stopped:
-                break
-
-            for j in range(len(targets[i])):
-                current_target = targets[i][j]
-                if current_target == 0:
-                    continue
-
-                next_target = 0
-                delta = 0
-                while not found_match and next_target == 0 and j + delta < len(targets[i]) - 1:
-                    delta += 1
-                    next_target = targets[i][j + delta]
-                    if next_target == 0:
-                        continue
-                    if (next_target + current_target == 10):
-                        found_match = True
-                        self.draw_rectangle([j, i], [j + delta, i])
-                        return True
-
-                next_target = 0
-                delta = 0
-                while not found_match and next_target == 0 and i + delta < len(targets) - 1:
-                    delta += 1
-                    next_target = targets[i + delta][j]
-                    if next_target == 0:
-                        continue
-                    if (next_target + current_target == 10):
-                        found_match = True
-                        self.draw_rectangle([j, i], [j, i + delta])
-                        return True
-            i += 1
-
-        return found_match
-
     # for board - get list of all matches
     # for each match, apply the move, then get list of all matches
     # whichever move has the best increase in possible matches, do that one
-    def chooseBestMove(self, targets):
-        bestMove = None
-        bestMatches = -999
-        matches = self.getAllMatches(targets)
+    def chooseBestMove(self, targets):        
+        totalRows = len(targets)
+        totalCols = len(targets[0])
+
+        matches = self.getAllMatches(targets, totalRows, totalCols)
         print("Moves Left: " + str(len(matches)))
 
-        if len(matches) == 0:
+        numMatches = len(matches)
+        if numMatches == 0:
             return None
 
+        bestMove = None
+        bestMatches = -1
+        highestNum = 0
+        tempTargets = np.array(targets)  # Initialize with original targets
+
         for match in matches:
-            tempTargets = self.targets.copy()
-            
-            # apply the move
+            changes = []
+        
+            # Apply the move
             for x in range(match[0][0], match[1][0] + 1):
                 for y in range(match[0][1], match[1][1] + 1):
+                    changes.append((y, x, tempTargets[y][x]))
                     tempTargets[y][x] = 0
+            
+            newMatches = self.getAllMatches(tempTargets, totalRows, totalCols)
 
-            # get all matches
-            newMatches = self.getAllMatches(tempTargets)
+            # get max z in changes
+            newHighestNum = 0
+            # Undo the changes after processing this move
+            for y, x, z in changes:
+                newHighestNum = max(newHighestNum, z)
+                tempTargets[y][x] = z  # Replace with actual value to restore
+            
+            # good enough move, just take it (for speed)
+            # if len(newMatches) > numMatches + 1 or (numMatches > 50 and len(newMatches) > numMatches):
+            #     return match
+
 
             # if we have more matches, update best move
-            if len(newMatches) > bestMatches:
-                bestMatches = len(newMatches)
+            newMatchCount = len(newMatches)
+            if newMatchCount > bestMatches or (newMatchCount == bestMatches and newHighestNum > highestNum):
+                highestNum = newHighestNum # prioritize getting rid of 9s, 8s, etc.
+                bestMatches = newMatchCount
                 bestMove = match
-
-            # much faster way. less thorough 
-            if len(newMatches) >= len(matches):
-                # found a good enough move, take it
-                return match
 
         return bestMove
 
-    def getAllMatches(self, targets):
-        i = 0
+    def getAllMatches(self, targets, totalRows, totalCols):
+        # precompute prefix sum for faster sliced sum calculations
+        prefix_sum = np.zeros((totalRows + 1, totalCols + 1), dtype=int)
+        for i in range(1, totalRows + 1):
+            for j in range(1, totalCols + 1):
+                prefix_sum[i][j] = prefix_sum[i - 1][j] + prefix_sum[i][j - 1] - prefix_sum[i - 1][j - 1] + targets[i - 1][j - 1]
+        
+        def slicedSum(x1, x2, y1, y2):
+            return prefix_sum[y2 + 1][x2 + 1] - prefix_sum[y1][x2 + 1] - prefix_sum[y2 + 1][x1] + prefix_sum[y1][x1]
+
         matches = []
-        while i < len(targets):
-            for j in range(len(targets[i])):
+
+        i = 0
+        while i < totalRows:
+            j = 0
+            while j < totalCols:
                 current_target = targets[i][j]
+                # we have selected a target, now we search for a match
 
-                #span both mult
-                deltaX = 0
-                deltaY = -1
-                while j + deltaX < len(targets[i]) - 1:
+                found_match = False
+
+                # check for horizontal matches
+                deltaX = -1
+                while j + deltaX < totalCols - 1:
+                    if found_match:
+                        break
                     deltaX += 1
-                    deltaY = -1
-                    while i + deltaY < len(targets) - 1:
+                    deltaY = 0
+                    while i + deltaY < totalRows - 1:
+                        if found_match:
+                            break
                         deltaY += 1
-                        
-                        if ([[j, i], [j + deltaX, i + deltaY]]) in matches:
-                            continue
 
-                        firstRowSum = 0
-                        for x in range(j, j + deltaX + 1):
-                            firstRowSum += targets[i][x]
-                        
-                        firstColSum = 0
-                        for y in range(i, i + deltaY + 1):
-                            firstColSum += targets[y][j]
-                        
-                        if firstRowSum == 0 or firstColSum == 0:
-                            continue
-                        
                         # sum all targets from i, j  to i + deltaY, j + deltaX
-                        sumInBox = 0
-                        for y in range(i, i + deltaY + 1):
-                            for x in range(j, j + deltaX + 1):
-                                sumInBox += targets[y][x]
-                        
+                        sumInBox = slicedSum(j, j + deltaX, i, i + deltaY)
+
+                        if sumInBox > 10:
+                            break
+
                         if sumInBox == 10:
+                            # check if there is unnecessary empty space in this box (if first or last row or column is all zeroes)
+                            firstRowSum = 0
+                            for x in range(j, j + deltaX + 1):
+                                firstRowSum += targets[i][x]
+                            
+                            firstColSum = 0
+                            for y in range(i, i + deltaY + 1):
+                                firstColSum += targets[y][j]
+                                
+                            lastRowSum = 0
+                            for x in range(j, j + deltaX + 1):
+                                lastRowSum += targets[i + deltaY][x]
+                            
+                            lastColSum = 0
+                            for y in range(i, i + deltaY + 1):
+                                lastColSum += targets[y][j + deltaX]
+                            
+                            if firstRowSum == 0 or lastRowSum == 0 or firstColSum == 0 or lastColSum == 0:
+                                break
+
+                            found_match = True
                             matches.append([[j, i], [j + deltaX, i + deltaY]])
 
-                #span both mult
-                deltaX = -1
-                deltaY = 0
-                while i + deltaY < len(targets) - 1:
+                # check for vertical matches
+                deltaY = -1
+                while i + deltaY < totalRows - 1:
+                    if found_match:
+                        break
                     deltaY += 1
-                    deltaX = -1
-                    while j + deltaX < len(targets[i]) - 1:
+                    deltaX = 0
+                    while j + deltaX < totalCols - 1:
+                        if found_match:
+                            break
                         deltaX += 1
 
-                        if ([[j, i], [j + deltaX, i + deltaY]]) in matches:
-                            continue
-
-                        firstRowSum = 0
-                        for x in range(j, j + deltaX + 1):
-                            firstRowSum += targets[i][x]
-                        
-                        firstColSum = 0
-                        for y in range(i, i + deltaY + 1):
-                            firstColSum += targets[y][j]
-                        
-                        if firstRowSum == 0 or firstColSum == 0:
-                            continue
-                        
                         # sum all targets from i, j  to i + deltaY, j + deltaX
-                        sumInBox = 0
-                        for y in range(i, i + deltaY + 1):
-                            for x in range(j, j + deltaX + 1):
-                                sumInBox += targets[y][x]
+                        sumInBox = slicedSum(j, j + deltaX, i, i + deltaY)
+
+                        if sumInBox > 10:
+                            break
 
                         if sumInBox == 10:
+                            # check if there is unnecessary empty space in this box (if first or last row or column is all zeroes)
+                            firstRowSum = 0
+                            for x in range(j, j + deltaX + 1):
+                                firstRowSum += targets[i][x]
+                            
+                            firstColSum = 0
+                            for y in range(i, i + deltaY + 1):
+                                firstColSum += targets[y][j]
+                                
+                            lastRowSum = 0
+                            for x in range(j, j + deltaX + 1):
+                                lastRowSum += targets[i + deltaY][x]
+                            
+                            lastColSum = 0
+                            for y in range(i, i + deltaY + 1):
+                                lastColSum += targets[y][j + deltaX]
+                            
+                            if firstRowSum == 0 or lastRowSum == 0 or firstColSum == 0 or lastColSum == 0:
+                                break
+
+                            found_match = True
                             matches.append([[j, i], [j + deltaX, i + deltaY]])
 
+                j += 1
             i += 1
 
         return matches
 
-    def check_combo_matches(self):
-        targets = self.targets
-
-        if self.curr_row >= len(self.targets):
-            self.curr_row = 0
-        
-        i = self.curr_row
-        found_match = False
-        while not found_match and i < len(targets):
-            # if we stopped our script, exit this loop
-            if self.stopped:
-                break
-
-            for j in range(len(targets[i])):
-                current_target = targets[i][j]
-
-                #span both mult
-                deltaX = 0
-                deltaY = -1
-                while not found_match and j + deltaX < len(targets[i]) - 1:
-                    deltaX += 1
-                    deltaY = -1
-                    while not found_match and i + deltaY < len(targets) - 1:
-                        deltaY += 1
-                        
-                        # sum all targets from i, j  to i + deltaY, j + deltaX
-                        sumInBox = 0
-                        for y in range(i, i + deltaY + 1):
-                            for x in range(j, j + deltaX + 1):
-                                sumInBox += targets[y][x]
-
-                        if sumInBox == 10:
-                            found_match = True
-                            self.draw_rectangle([j, i], [j + deltaX, i + deltaY])
-                            return True
-
-                #span both mult
-                deltaX = -1
-                deltaY = 0
-                while not found_match and i + deltaY < len(targets) - 1:
-                    deltaY += 1
-                    deltaX = -1
-                    while not found_match and j + deltaX < len(targets[i]) - 1:
-                        deltaX += 1
-                        
-                        # sum all targets from i, j  to i + deltaY, j + deltaX
-                        sumInBox = 0
-                        for y in range(i, i + deltaY + 1):
-                            for x in range(j, j + deltaX + 1):
-                                sumInBox += targets[y][x]
-
-                        if sumInBox == 10:
-                            found_match = True
-                            self.draw_rectangle([j, i], [j + deltaX, i + deltaY])
-                            return True
-
-            i += 1
-
-        return found_match
 
     # translate a pixel position on a screenshot image to a pixel position on the screen.
     # pos = (x, y)
@@ -351,26 +300,17 @@ class Bot:
                     sleep(0.500)
                     continue
 
-                # check first for adjacent matches (minimum search effort)
                 self.lock.acquire()
-                success = self.check_adj_matches()
-                if not success:
-                    self.curr_row = 0
-                    # on failure, reset curr_row (to check from first row again)
-                    # then try search one more time
-                    success = self.check_adj_matches()
+                bestMove = self.chooseBestMove(self.targets)
+                
+                if not bestMove:
+                    self.stopped = True
+                    print("No moves found")
+                    break
 
-                if not success:
-                    # if search still unsuccessful, check for combo matches
-                    bestMove = self.chooseBestMove(self.targets)
-
-                    if not bestMove:
-                        self.stopped = True
-                        print("No moves found")
-                        break
-
-                    self.draw_rectangle(bestMove[0], bestMove[1])
+                self.draw_rectangle(bestMove[0], bestMove[1])
                 self.lock.release()
+                continue
 
             elif self.state == BotState.MOVING:
                 self.lock.acquire()
